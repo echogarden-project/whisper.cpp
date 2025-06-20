@@ -1,0 +1,5 @@
+rd /s /q build
+
+cmake -B build -A ARM64 -D GGML_CUDA=OFF -D BUILD_SHARED_LIBS=ON -D WHISPER_BUILD_TESTS=OFF -D WHISPER_BUILD_EXAMPLES=OFF -D WHISPER_BUILD_SERVER=OFF
+
+cmake --build build --config Release -j 4

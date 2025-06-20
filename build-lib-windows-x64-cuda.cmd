@@ -1,0 +1,5 @@
+rd /s /q build
+
+cmake -B build -D GGML_CUDA=ON -D BUILD_SHARED_LIBS=ON -D WHISPER_BUILD_TESTS=OFF -D WHISPER_BUILD_EXAMPLES=OFF -D WHISPER_BUILD_SERVER=OFF -D GGML_CUDA_NO_VMM=ON
+
+cmake --build build --config Release -j 4

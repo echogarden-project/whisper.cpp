@@ -339,6 +339,14 @@ extern "C" {
                                int   n_past,
                                int   n_threads);
 
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // FORK: Methods added for extracting the cross-attention QKs for the alignment heads
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+    WHISPER_API int64_t* whisper_get_aheads_cross_QKs_dims(struct whisper_state* state);
+
+    WHISPER_API void whisper_write_aheads_cross_QKs(struct whisper_state* state, float* data);
+    /////////////////////////////////////////////////////////////////////////////////////////////////
+
     // Convert the provided text into tokens.
     // The tokens pointer must be large enough to hold the resulting tokens.
     // Returns the number of tokens on success, no more than n_max_tokens

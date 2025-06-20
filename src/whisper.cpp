@@ -2742,20 +2742,27 @@ static struct ggml_cgraph * whisper_build_graph_decoder(
 
                 // [EXPERIMENTAL] Token-level timestamps with DTW
                 if (wctx.params.dtw_token_timestamps) {
+                    /////////////////////////////////////////////////////////////////////////////////////
+                    // FORK: Don't pre-apply softmax before storing cross-attention KQs
+                    /////////////////////////////////////////////////////////////////////////////////////
                     if (wstate.aheads_masks.m[il] != nullptr) {
-                        struct ggml_tensor * aheads_KQs = ggml_reshape_2d(ctx0, KQ_soft_max, KQ_soft_max->ne[0] * KQ_soft_max->ne[1], KQ_soft_max->ne[2]);
+                        struct ggml_tensor* KQ_scaled = ggml_scale(ctx0, KQ, KQscale);
+
+                        struct ggml_tensor * aheads_KQs = ggml_reshape_2d(ctx0, KQ_scaled, KQ_scaled->ne[0] * KQ_scaled->ne[1], KQ_scaled->ne[2]);
                         aheads_KQs = ggml_transpose(ctx0, aheads_KQs);
                         aheads_KQs = ggml_cont(ctx0, aheads_KQs);
                         aheads_KQs = ggml_mul_mat(ctx0, wstate.aheads_masks.m[il], aheads_KQs);
                         aheads_KQs = ggml_transpose(ctx0, aheads_KQs);
                         aheads_KQs = ggml_cont(ctx0, aheads_KQs);
-                        aheads_KQs = ggml_reshape_3d(ctx0, aheads_KQs, KQ_soft_max->ne[0], KQ_soft_max->ne[1], wstate.aheads_masks.m[il]->ne[1]);
+                        aheads_KQs = ggml_reshape_3d(ctx0, aheads_KQs, KQ_scaled->ne[0], KQ_scaled->ne[1], wstate.aheads_masks.m[il]->ne[1]);
+
                         if (aheads_cross_QKs == NULL) {
                             aheads_cross_QKs = aheads_KQs;
                         } else {
                             aheads_cross_QKs = ggml_concat(ctx0, aheads_cross_QKs, aheads_KQs, 2);
                         }
                     }
+                    /////////////////////////////////////////////////////////////////////////////////////
                 }
 
                 struct ggml_tensor * KQV = ggml_mul_mat(ctx0, Vcross, KQ_soft_max);
@@ -2843,12 +2850,14 @@ static struct ggml_cgraph * whisper_build_graph_decoder(
 
     // [EXPERIMENTAL] Token-level timestamps with DTW
     if (wctx.params.dtw_token_timestamps && aheads_cross_QKs != nullptr) {
-        aheads_cross_QKs = ggml_transpose(ctx0, aheads_cross_QKs);
-        aheads_cross_QKs = ggml_cont(ctx0, aheads_cross_QKs);
+        /////////////////////////////////////////////////////////////////////////////////////
+        // FORK: Don't transpose before storing cross-attention KQs
+        /////////////////////////////////////////////////////////////////////////////////////
         if (save_alignment_heads_QKs) {
             ggml_build_forward_expand(gf, aheads_cross_QKs);
             wstate.aheads_cross_QKs = aheads_cross_QKs;
         }
+        /////////////////////////////////////////////////////////////////////////////////////
     }
 
     ggml_build_forward_expand(gf, logits);
@@ -3960,13 +3969,54 @@ int whisper_decode_with_state(struct whisper_context * ctx, struct whisper_state
 
     whisper_kv_cache_seq_rm(state->kv_self, 0, n_past, -1);
 
-    if (!whisper_decode_internal(*ctx, *state, state->batch, n_threads, false, nullptr, nullptr)) {
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // FORK: Set 'save_alignment_heads_QKs' to always be true when DTW is enabled:
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+    if (!whisper_decode_internal(*ctx, *state, state->batch, n_threads, ctx->params.dtw_token_timestamps, nullptr, nullptr)) {
         WHISPER_LOG_ERROR("%s: failed to eval\n", __func__);
         return 1;
     }
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     return 0;
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
+// FORK: Methods added for extracting the cross-attention QKs for the alignment heads
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
+WHISPER_API int64_t* whisper_get_aheads_cross_QKs_dims(struct whisper_state* state) {
+    auto qksTensor = state->aheads_cross_QKs;
+
+    auto dimensions = new int64_t[3]();
+
+    if (qksTensor != nullptr) {
+        // Reverse order of dimensions for more standard dimension ordering (row-major)
+        dimensions[0] = qksTensor->ne[2];
+        dimensions[1] = qksTensor->ne[1];
+        dimensions[2] = qksTensor->ne[0];
+    }
+
+    return dimensions;
+}
+
+WHISPER_API void whisper_write_aheads_cross_QKs(struct whisper_state* state, float* data) {
+    auto qksTensor = state->aheads_cross_QKs;
+
+    if (qksTensor == nullptr) {
+        return;
+    }
+
+    auto totalElementCount = qksTensor->ne[0] * qksTensor->ne[1] * qksTensor->ne[2];
+
+    // Copy data from ggml_tensor
+    ggml_backend_tensor_get(
+        qksTensor,
+        data,
+        0,
+        totalElementCount * sizeof(float)
+    );
+}
+///////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int whisper_decode(struct whisper_context * ctx, const whisper_token * tokens, int n_tokens, int n_past, int n_threads) {
     if (ctx->state == nullptr) {
